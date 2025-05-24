@@ -22,27 +22,23 @@ use plonky2::{
     util::serialization::{Buffer, IoResult, Read, Write},
 };
 
-pub trait SimpleGate: 'static + Send + Sync + Sized + Clone {
-    type F: RichField + Extendable<1>;
+pub trait SimpleGate<F: RichField + Extendable<1>>: 'static + Send + Sync + Sized + Clone {
     const INPUTS_PER_OP: usize;
     const OUTPUTS_PER_OP: usize;
     const WIRES_PER_OP: usize = Self::INPUTS_PER_OP + Self::OUTPUTS_PER_OP;
     const DEGREE: usize;
     const ID: &'static str;
     fn eval<const D: usize>(
-        wires: &[<Self::F as Extendable<D>>::Extension],
-    ) -> Vec<<Self::F as Extendable<D>>::Extension>
+        wires: &[<F as Extendable<D>>::Extension],
+    ) -> Vec<<F as Extendable<D>>::Extension>
     where
-        Self::F: Extendable<D>;
-    fn apply<const D: usize>(
-        builder: &mut CircuitBuilder<Self::F, D>,
-        targets: &[Target],
-    ) -> Vec<Target>
+        F: Extendable<D>;
+    fn apply<const D: usize>(builder: &mut CircuitBuilder<F, D>, targets: &[Target]) -> Vec<Target>
     where
-        Self::F: Extendable<D>,
+        F: Extendable<D>,
     {
         assert!(targets.len() == Self::INPUTS_PER_OP);
-        let gate = GateAdapter::<Self>::new_from_config(&builder.config);
+        let gate = GateAdapter::<F, Self>::new_from_config(&builder.config);
         let (row, slot) = builder.find_slot(gate, &[], &[]);
         let input_start = Self::WIRES_PER_OP * slot;
         let output_start = input_start + Self::INPUTS_PER_OP;
@@ -57,68 +53,70 @@ pub trait SimpleGate: 'static + Send + Sync + Sized + Clone {
 
 #[derive(Clone)]
 #[derive_where(Debug)]
-pub struct GateAdapter<G: SimpleGate> {
+pub struct GateAdapter<F: RichField + Extendable<1>, G: SimpleGate<F>> {
     max_ops: usize,
     recursive_max_wires: usize,
-    _gate: PhantomData<G>,
+    _phantom: PhantomData<(G, fn(F) -> F)>,
 }
 
 #[derive(Clone)]
 #[derive_where(Debug)]
-pub struct RecursiveGateAdapter<const D: usize, G: SimpleGate> {
+pub struct RecursiveGateAdapter<const D: usize, F: RichField + Extendable<1>, G: SimpleGate<F>> {
     max_ops: usize,
-    _gate: PhantomData<G>,
+    _phantom: PhantomData<(G, fn(F) -> F)>,
 }
 
 #[derive_where(Debug)]
-pub struct RecursiveGenerator<const D: usize, G: SimpleGate> {
+pub struct RecursiveGenerator<const D: usize, F: RichField + Extendable<1>, G: SimpleGate<F>> {
     row: usize,
     index: usize,
-    _gate: PhantomData<G>,
+    _phantom: PhantomData<(G, fn(F) -> F)>,
 }
 
 // Circuit data can only be serialized if the generators implement Default
-impl<const D: usize, G: SimpleGate> Default for RecursiveGenerator<D, G> {
+impl<const D: usize, F: RichField + Extendable<1>, G: SimpleGate<F>> Default
+    for RecursiveGenerator<D, F, G>
+{
     fn default() -> Self {
         Self {
             row: 0,
             index: 0,
-            _gate: PhantomData,
+            _phantom: PhantomData,
         }
     }
 }
 
-impl<G: SimpleGate> GateAdapter<G> {
+impl<F: RichField + Extendable<1>, G: SimpleGate<F>> GateAdapter<F, G> {
     const WIRES_PER_OP: usize = G::INPUTS_PER_OP + G::OUTPUTS_PER_OP;
 
     pub fn new_from_config(config: &CircuitConfig) -> Self {
         Self {
             max_ops: config.num_routed_wires / Self::WIRES_PER_OP,
             recursive_max_wires: config.num_routed_wires,
-            _gate: PhantomData,
+            _phantom: PhantomData,
         }
     }
 
-    pub fn recursive_gate<const D: usize>(&self) -> RecursiveGateAdapter<D, G> {
-        RecursiveGateAdapter::<D, G> {
+    pub fn recursive_gate<const D: usize>(&self) -> RecursiveGateAdapter<D, F, G> {
+        RecursiveGateAdapter::<D, F, G> {
             max_ops: self.recursive_max_wires / (D * G::WIRES_PER_OP),
-            _gate: PhantomData,
+            _phantom: PhantomData,
         }
     }
 }
 
-impl<const D: usize, G: SimpleGate> RecursiveGateAdapter<D, G> {
+impl<const D: usize, F: RichField + Extendable<1>, G: SimpleGate<F>> RecursiveGateAdapter<D, F, G> {
     const INPUTS_PER_OP: usize = D * G::INPUTS_PER_OP;
     const OUTPUTS_PER_OP: usize = D * G::OUTPUTS_PER_OP;
     const WIRES_PER_OP: usize = Self::INPUTS_PER_OP + Self::OUTPUTS_PER_OP;
 
     fn apply(
         &self,
-        builder: &mut CircuitBuilder<G::F, D>,
+        builder: &mut CircuitBuilder<F, D>,
         vars: &[ExtensionTarget<D>],
     ) -> Vec<ExtensionTarget<D>>
     where
-        G::F: Extendable<D>,
+        F: Extendable<D>,
     {
         let (row, slot) = builder.find_slot(self.clone(), &[], &[]);
         for j in 0..G::INPUTS_PER_OP {
@@ -127,7 +125,7 @@ impl<const D: usize, G: SimpleGate> RecursiveGateAdapter<D, G> {
                     v,
                     Target::wire(
                         row,
-                        slot * RecursiveGateAdapter::<D, G>::WIRES_PER_OP + j * D + k,
+                        slot * RecursiveGateAdapter::<D, F, G>::WIRES_PER_OP + j * D + k,
                     ),
                 );
             }
@@ -137,8 +135,8 @@ impl<const D: usize, G: SimpleGate> RecursiveGateAdapter<D, G> {
                 ExtensionTarget(core::array::from_fn(|k| {
                     Target::wire(
                         row,
-                        slot * RecursiveGateAdapter::<D, G>::WIRES_PER_OP
-                            + RecursiveGateAdapter::<D, G>::INPUTS_PER_OP
+                        slot * RecursiveGateAdapter::<D, F, G>::WIRES_PER_OP
+                            + RecursiveGateAdapter::<D, F, G>::INPUTS_PER_OP
                             + j * D
                             + k,
                     )
@@ -148,9 +146,9 @@ impl<const D: usize, G: SimpleGate> RecursiveGateAdapter<D, G> {
     }
 }
 
-impl<const D: usize, G: SimpleGate> RecursiveGenerator<D, G> {
-    const WIRES_PER_OP: usize = RecursiveGateAdapter::<D, G>::WIRES_PER_OP;
-    const INPUTS_PER_OP: usize = RecursiveGateAdapter::<D, G>::INPUTS_PER_OP;
+impl<const D: usize, F: RichField + Extendable<1>, G: SimpleGate<F>> RecursiveGenerator<D, F, G> {
+    const WIRES_PER_OP: usize = RecursiveGateAdapter::<D, F, G>::WIRES_PER_OP;
+    const INPUTS_PER_OP: usize = RecursiveGateAdapter::<D, F, G>::INPUTS_PER_OP;
 }
 
 #[derive(Debug, Clone)]
@@ -185,31 +183,27 @@ pub trait ReadTargetList: Read {
 
 impl<R: Read> ReadTargetList for R {}
 
-impl<G: SimpleGate, const D: usize> Gate<G::F, D> for GateAdapter<G>
+impl<F, G: SimpleGate<F>, const D: usize> Gate<F, D> for GateAdapter<F, G>
 where
-    G::F: RichField + Extendable<D> + Extendable<1>,
+    F: RichField + Extendable<D> + Extendable<1>,
 {
     fn id(&self) -> String {
         format!("GateAdapter<{}>", G::ID)
     }
 
-    fn serialize(
-        &self,
-        dst: &mut Vec<u8>,
-        _common_data: &CommonCircuitData<G::F, D>,
-    ) -> IoResult<()> {
+    fn serialize(&self, dst: &mut Vec<u8>, _common_data: &CommonCircuitData<F, D>) -> IoResult<()> {
         dst.write_usize(self.max_ops)?;
         dst.write_usize(self.recursive_max_wires)
     }
 
-    fn deserialize(src: &mut Buffer, _common_data: &CommonCircuitData<G::F, D>) -> IoResult<Self>
+    fn deserialize(src: &mut Buffer, _common_data: &CommonCircuitData<F, D>) -> IoResult<Self>
     where
         Self: Sized,
     {
         Ok(Self {
             max_ops: src.read_usize()?,
             recursive_max_wires: src.read_usize()?,
-            _gate: PhantomData,
+            _phantom: PhantomData,
         })
     }
 
@@ -236,15 +230,15 @@ where
     fn generators(
         &self,
         row: usize,
-        _local_constants: &[G::F],
-    ) -> Vec<plonky2::iop::generator::WitnessGeneratorRef<G::F, D>> {
+        _local_constants: &[F],
+    ) -> Vec<plonky2::iop::generator::WitnessGeneratorRef<F, D>> {
         (0..self.max_ops)
             .map(|index| {
                 WitnessGeneratorRef::new(
-                    RecursiveGenerator::<1, G> {
+                    RecursiveGenerator::<1, F, G> {
                         row,
                         index,
-                        _gate: PhantomData,
+                        _phantom: PhantomData,
                     }
                     .adapter(),
                 )
@@ -254,15 +248,15 @@ where
 
     fn eval_unfiltered_base_one(
         &self,
-        vars_base: plonky2::plonk::vars::EvaluationVarsBase<G::F>,
-        mut yield_constr: plonky2::gates::util::StridedConstraintConsumer<G::F>,
+        vars_base: plonky2::plonk::vars::EvaluationVarsBase<F>,
+        mut yield_constr: plonky2::gates::util::StridedConstraintConsumer<F>,
     ) {
         for i in 0..self.max_ops {
             let in_start = Self::WIRES_PER_OP * i;
             let out_start = in_start + G::INPUTS_PER_OP;
             let inputs: Vec<_> = (0..G::INPUTS_PER_OP)
                 .map(|j| {
-                    <G::F as Extendable<1>>::Extension::from_basefield_array([
+                    <F as Extendable<1>>::Extension::from_basefield_array([
                         vars_base.local_wires[in_start + j]
                     ])
                 })
@@ -276,10 +270,7 @@ where
         }
     }
 
-    fn eval_unfiltered(
-        &self,
-        vars: EvaluationVars<G::F, D>,
-    ) -> Vec<<G::F as Extendable<D>>::Extension> {
+    fn eval_unfiltered(&self, vars: EvaluationVars<F, D>) -> Vec<<F as Extendable<D>>::Extension> {
         let mut constraints = Vec::new();
         for i in 0..self.max_ops {
             let in_start = Self::WIRES_PER_OP * i;
@@ -297,7 +288,7 @@ where
 
     fn eval_unfiltered_circuit(
         &self,
-        builder: &mut plonky2::plonk::circuit_builder::CircuitBuilder<G::F, D>,
+        builder: &mut plonky2::plonk::circuit_builder::CircuitBuilder<F, D>,
         vars: plonky2::plonk::vars::EvaluationTargets<D>,
     ) -> Vec<plonky2::iop::ext_target::ExtensionTarget<D>> {
         let mut constraints = Vec::with_capacity(G::OUTPUTS_PER_OP * self.max_ops);
@@ -316,7 +307,7 @@ where
     }
 }
 
-impl<G: SimpleGate, const D: usize> RecursiveGenerator<D, G> {
+impl<F: RichField + Extendable<1>, G: SimpleGate<F>, const D: usize> RecursiveGenerator<D, F, G> {
     fn deps(&self) -> Vec<Target> {
         let offset = self.index * Self::WIRES_PER_OP;
         (0..Self::INPUTS_PER_OP)
@@ -325,28 +316,24 @@ impl<G: SimpleGate, const D: usize> RecursiveGenerator<D, G> {
     }
 }
 
-impl<G, const D: usize, const E: usize> SimpleGenerator<G::F, E> for RecursiveGenerator<D, G>
+impl<F, G, const D: usize, const E: usize> SimpleGenerator<F, E> for RecursiveGenerator<D, F, G>
 where
-    G: SimpleGate,
-    G::F: RichField + Extendable<D> + Extendable<E>,
+    G: SimpleGate<F>,
+    F: RichField + Extendable<D> + Extendable<E> + Extendable<1>,
 {
-    fn serialize(
-        &self,
-        dst: &mut Vec<u8>,
-        _common_data: &CommonCircuitData<G::F, E>,
-    ) -> IoResult<()> {
+    fn serialize(&self, dst: &mut Vec<u8>, _common_data: &CommonCircuitData<F, E>) -> IoResult<()> {
         dst.write_usize(self.row)?;
         dst.write_usize(self.index)
     }
 
-    fn deserialize(src: &mut Buffer, _common_data: &CommonCircuitData<G::F, E>) -> IoResult<Self>
+    fn deserialize(src: &mut Buffer, _common_data: &CommonCircuitData<F, E>) -> IoResult<Self>
     where
         Self: Sized,
     {
         Ok(Self {
             row: src.read_usize()?,
             index: src.read_usize()?,
-            _gate: PhantomData,
+            _phantom: PhantomData,
         })
     }
 
@@ -360,18 +347,18 @@ where
 
     fn run_once(
         &self,
-        witness: &plonky2::iop::witness::PartitionWitness<G::F>,
-        out_buffer: &mut plonky2::iop::generator::GeneratedValues<G::F>,
+        witness: &plonky2::iop::witness::PartitionWitness<F>,
+        out_buffer: &mut plonky2::iop::generator::GeneratedValues<F>,
     ) -> anyhow::Result<()> {
         let deps = self.deps();
-        let inputs: Vec<<G::F as Extendable<D>>::Extension> = (0..G::INPUTS_PER_OP)
+        let inputs: Vec<<F as Extendable<D>>::Extension> = (0..G::INPUTS_PER_OP)
             .map(|i| {
-                <G::F as Extendable<D>>::Extension::from_basefield_array(core::array::from_fn(
-                    |j| witness.get_target(deps[i * D + j]),
-                ))
+                <F as Extendable<D>>::Extension::from_basefield_array(core::array::from_fn(|j| {
+                    witness.get_target(deps[i * D + j])
+                }))
             })
             .collect();
-        let out: Vec<<G::F as Extendable<D>>::Extension> = G::eval::<D>(&inputs[..]);
+        let out: Vec<<F as Extendable<D>>::Extension> = G::eval::<D>(&inputs[..]);
         for (i, x) in out.into_iter().enumerate() {
             for (j, y) in x.to_basefield_array().into_iter().enumerate() {
                 let offset = self.index * Self::WIRES_PER_OP;
@@ -383,10 +370,10 @@ where
     }
 }
 
-impl<G: SimpleGate, const D: usize, F> Gate<F, D> for RecursiveGateAdapter<D, G>
+impl<G, const D: usize, F> Gate<F, D> for RecursiveGateAdapter<D, F, G>
 where
-    G: SimpleGate<F = F>,
-    F: RichField + Extendable<D>,
+    G: SimpleGate<F>,
+    F: RichField + Extendable<D> + Extendable<1>,
 {
     fn id(&self) -> String {
         format!("RecursiveGateAdapter<{},{}>", D, G::ID)
@@ -403,7 +390,7 @@ where
         let max_ops = src.read_usize()?;
         Ok(Self {
             max_ops,
-            _gate: PhantomData,
+            _phantom: PhantomData,
         })
     }
 
@@ -431,10 +418,10 @@ where
         (0..self.max_ops)
             .map(|index| {
                 WitnessGeneratorRef::new(
-                    RecursiveGenerator::<D, G> {
+                    RecursiveGenerator::<D, F, G> {
                         row,
                         index,
-                        _gate: PhantomData,
+                        _phantom: PhantomData,
                     }
                     .adapter(),
                 )
@@ -452,12 +439,12 @@ where
             let output_start = input_start + D * G::INPUTS_PER_OP;
             let input: Vec<_> = (0..G::INPUTS_PER_OP)
                 .map(|j| {
-                    F::Extension::from_basefield_array(core::array::from_fn(|k| {
-                        vars_base.local_wires[input_start + D * j + k]
-                    }))
+                    <F as Extendable<D>>::Extension::from_basefield_array(core::array::from_fn(
+                        |k| vars_base.local_wires[input_start + D * j + k],
+                    ))
                 })
                 .collect();
-            let output = G::eval(&input);
+            let output = G::eval::<D>(&input);
             for j in 0..G::OUTPUTS_PER_OP {
                 yield_constr.many((0..D).map(|k| {
                     output[j].to_basefield_array()[k]
@@ -467,17 +454,18 @@ where
         }
     }
 
-    fn eval_unfiltered(&self, vars: EvaluationVars<F, D>) -> Vec<F::Extension> {
+    fn eval_unfiltered(&self, vars: EvaluationVars<F, D>) -> Vec<<F as Extendable<D>>::Extension> {
         // We think of vars as a list of G::WIRES_PER_OP elements of ExtensionAlgebra<F,D>.
         // We use the fact that ExtensionAlgebra<F,D> is isomorphic to D copies of
         // F::Extension, with the isomorphism given by (a \otimes b) ->
         // [a.repeated_frobenius(j) * b for j in 0..D].
         let mut constraints = Vec::with_capacity(D * G::OUTPUTS_PER_OP);
-        let mut evals: [Vec<F::Extension>; D] = core::array::from_fn(|_| Vec::new());
+        let mut evals: [Vec<<F as Extendable<D>>::Extension>; D] =
+            core::array::from_fn(|_| Vec::new());
         let mut inputs = Vec::with_capacity(G::INPUTS_PER_OP);
-        let dth_root_inv = F::DTH_ROOT.inverse();
+        let dth_root_inv = <F as Extendable<D>>::DTH_ROOT.inverse();
         let d_inv = F::from_canonical_usize(D).inverse();
-        let w_inv = F::W.inverse();
+        let w_inv = <F as Extendable<D>>::W.inverse();
         for i in 0..self.max_ops {
             let input_start = D * G::WIRES_PER_OP * i;
             let output_start = input_start + D * G::INPUTS_PER_OP;
@@ -497,15 +485,15 @@ where
                             if k + l < D {
                                 input[k + l] += prod;
                             } else {
-                                input[k + l - D] += F::W * prod;
+                                input[k + l - D] += <F as Extendable<D>>::W * prod;
                             }
                         }
                         factor *= phase;
                     }
-                    inputs.push(F::Extension::from_basefield_array(input));
+                    inputs.push(<F as Extendable<D>>::Extension::from_basefield_array(input));
                 }
-                *ev = G::eval(&inputs);
-                phase *= F::DTH_ROOT;
+                *ev = G::eval::<D>(&inputs);
+                phase *= <F as Extendable<D>>::DTH_ROOT;
             }
             for j in 0..G::OUTPUTS_PER_OP {
                 let mut phase = F::ONE;
@@ -526,7 +514,7 @@ where
                         factor *= phase;
                     }
                     phase *= dth_root_inv;
-                    let expected = F::Extension::from_basefield_array(output);
+                    let expected = <F as Extendable<D>>::Extension::from_basefield_array(output);
                     let actual = vars.local_wires[output_start + j * D + k];
                     constraints.push(expected - actual);
                 }
@@ -543,10 +531,10 @@ where
         let mut constraints = Vec::with_capacity(D * G::OUTPUTS_PER_OP);
         let mut evals: [Vec<ExtensionTarget<D>>; D] = core::array::from_fn(|_| Vec::new());
         let mut inputs = Vec::with_capacity(G::INPUTS_PER_OP);
-        let dth_root_inv = F::DTH_ROOT.inverse();
+        let dth_root_inv = <F as Extendable<D>>::DTH_ROOT.inverse();
         let d_inv = F::from_canonical_usize(D).inverse();
-        let w_inv_t = builder.constant(F::W.inverse());
-        let w_t = builder.constant(F::W);
+        let w_inv_t = builder.constant(<F as Extendable<D>>::W.inverse());
+        let w_t = builder.constant(<F as Extendable<D>>::W);
         for i in 0..self.max_ops {
             let input_start = D * G::WIRES_PER_OP * i;
             let output_start = input_start + D * G::INPUTS_PER_OP;
@@ -575,7 +563,7 @@ where
                     inputs.push(ExtensionTarget(input));
                 }
                 *ev = self.apply(builder, &inputs);
-                phase *= F::DTH_ROOT;
+                phase *= <F as Extendable<D>>::DTH_ROOT;
             }
             for j in 0..G::OUTPUTS_PER_OP {
                 let mut phase = F::ONE;
@@ -604,5 +592,74 @@ where
             }
         }
         constraints
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use plonky2::{
+        field::{extension::Extendable, goldilocks_field::GoldilocksField, types::Sample},
+        hash::hash_types::RichField,
+        iop::witness::PartialWitness,
+        plonk::{
+            circuit_builder::CircuitBuilder, circuit_data::CircuitConfig,
+            config::PoseidonGoldilocksConfig,
+        },
+    };
+
+    use crate::{GateAdapter, SimpleGate};
+
+    #[derive(Clone)]
+    struct MulGate;
+
+    impl<F: RichField + Extendable<1>> SimpleGate<F> for MulGate {
+        const INPUTS_PER_OP: usize = 2;
+        const OUTPUTS_PER_OP: usize = 1;
+        const DEGREE: usize = 2;
+        const ID: &'static str = "MulGate";
+        fn eval<const D: usize>(
+            wires: &[<F as Extendable<D>>::Extension],
+        ) -> Vec<<F as Extendable<D>>::Extension>
+        where
+            F: Extendable<D>,
+        {
+            vec![wires[0] * wires[1]]
+        }
+    }
+
+    #[test]
+    fn test_mul_consistency() -> anyhow::Result<()> {
+        let mut builder = CircuitBuilder::new(CircuitConfig::standard_recursion_config());
+        let x = GoldilocksField::rand();
+        let y = GoldilocksField::rand();
+        let z = x * y;
+        let x_t = builder.constant(x);
+        let y_t = builder.constant(y);
+        let z_t = builder.constant(z);
+        let prod = MulGate::apply(&mut builder, &[x_t, y_t])[0];
+        builder.connect(z_t, prod);
+        let data = builder.build::<PoseidonGoldilocksConfig>();
+        let proof = data.prove(PartialWitness::new())?;
+        data.verify(proof)
+    }
+
+    #[test]
+    fn test_low_degree() {
+        let gate = GateAdapter::<GoldilocksField, MulGate>::new_from_config(
+            &CircuitConfig::standard_recursion_config(),
+        );
+        let recursive = gate.recursive_gate();
+        plonky2::gates::gate_testing::test_low_degree::<_, _, 2>(gate);
+        plonky2::gates::gate_testing::test_low_degree::<_, _, 2>(recursive);
+    }
+
+    #[test]
+    fn test_recursion() -> anyhow::Result<()> {
+        let gate = GateAdapter::<GoldilocksField, MulGate>::new_from_config(
+            &CircuitConfig::standard_recursion_config(),
+        );
+        let recursive = gate.recursive_gate();
+        plonky2::gates::gate_testing::test_eval_fns::<_, PoseidonGoldilocksConfig, _, 2>(gate)?;
+        plonky2::gates::gate_testing::test_eval_fns::<_, PoseidonGoldilocksConfig, _, 2>(recursive)
     }
 }
