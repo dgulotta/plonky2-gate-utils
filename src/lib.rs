@@ -175,7 +175,7 @@ where
     G::F: RichField + Extendable<D> + Extendable<1>,
 {
     fn id(&self) -> String {
-        G::ID.to_string()
+        format!("GateAdapter<{}>", G::ID)
     }
 
     fn serialize(
@@ -336,7 +336,7 @@ where
     }
 
     fn id(&self) -> String {
-        format!("Generator<{},{}>", D, G::ID)
+        format!("RecursiveGenerator<{},{}>", D, G::ID)
     }
 
     fn dependencies(&self) -> Vec<Target> {
@@ -374,7 +374,7 @@ where
     F: RichField + Extendable<D>,
 {
     fn id(&self) -> String {
-        format!("Recursive<{},{}>", D, G::ID)
+        format!("RecursiveGateAdapter<{},{}>", D, G::ID)
     }
 
     fn serialize(&self, dst: &mut Vec<u8>, _common_data: &CommonCircuitData<F, D>) -> IoResult<()> {
