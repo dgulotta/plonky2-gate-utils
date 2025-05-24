@@ -73,6 +73,17 @@ pub struct RecursiveGenerator<const D: usize, G: SimpleGate> {
     _gate: PhantomData<G>,
 }
 
+// Circuit data can only be serialized if the generators implement Default
+impl<const D: usize, G: SimpleGate> Default for RecursiveGenerator<D, G> {
+    fn default() -> Self {
+        Self {
+            row: 0,
+            index: 0,
+            _gate: PhantomData,
+        }
+    }
+}
+
 impl<G: SimpleGate> GateAdapter<G> {
     const WIRES_PER_OP: usize = G::INPUTS_PER_OP + G::OUTPUTS_PER_OP;
 
