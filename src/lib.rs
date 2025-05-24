@@ -2,6 +2,8 @@
 
 use std::{fmt::Debug, marker::PhantomData};
 
+use derive_where::derive_where;
+
 use plonky2::{
     field::extension::{Extendable, FieldExtension},
     gates::gate::Gate,
@@ -20,7 +22,7 @@ use plonky2::{
     util::serialization::{Buffer, IoResult, Read, Write},
 };
 
-pub trait SimpleGate: 'static + Send + Sync + Sized + Clone + Debug {
+pub trait SimpleGate: 'static + Send + Sync + Sized + Clone {
     type F: RichField + Extendable<1>;
     const INPUTS_PER_OP: usize;
     const OUTPUTS_PER_OP: usize;
@@ -53,20 +55,22 @@ pub trait SimpleGate: 'static + Send + Sync + Sized + Clone + Debug {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
+#[derive_where(Debug)]
 pub struct GateAdapter<G: SimpleGate> {
     max_ops: usize,
     recursive_max_wires: usize,
     _gate: PhantomData<G>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
+#[derive_where(Debug)]
 pub struct RecursiveGateAdapter<const D: usize, G: SimpleGate> {
     max_ops: usize,
     _gate: PhantomData<G>,
 }
 
-#[derive(Debug)]
+#[derive_where(Debug)]
 pub struct RecursiveGenerator<const D: usize, G: SimpleGate> {
     row: usize,
     index: usize,
