@@ -22,7 +22,7 @@ use plonky2::{
     util::serialization::{Buffer, IoResult, Read, Write},
 };
 
-pub trait SimpleGate<F: RichField + Extendable<1>>: 'static + Send + Sync + Sized + Clone {
+pub trait SimpleGate<F: RichField + Extendable<1>>: 'static + Send + Sync + Sized {
     const INPUTS_PER_OP: usize;
     const OUTPUTS_PER_OP: usize;
     const WIRES_PER_OP: usize = Self::INPUTS_PER_OP + Self::OUTPUTS_PER_OP;
@@ -51,22 +51,20 @@ pub trait SimpleGate<F: RichField + Extendable<1>>: 'static + Send + Sync + Size
     }
 }
 
-#[derive(Clone)]
-#[derive_where(Debug)]
+#[derive_where(Clone, Debug)]
 pub struct GateAdapter<F: RichField + Extendable<1>, G: SimpleGate<F>> {
     max_ops: usize,
     recursive_max_wires: usize,
     _phantom: PhantomData<(G, fn(F) -> F)>,
 }
 
-#[derive(Clone)]
-#[derive_where(Debug)]
+#[derive_where(Clone, Debug)]
 pub struct RecursiveGateAdapter<const D: usize, F: RichField + Extendable<1>, G: SimpleGate<F>> {
     max_ops: usize,
     _phantom: PhantomData<(G, fn(F) -> F)>,
 }
 
-#[derive_where(Debug)]
+#[derive_where(Clone, Debug)]
 pub struct RecursiveGenerator<const D: usize, F: RichField + Extendable<1>, G: SimpleGate<F>> {
     row: usize,
     index: usize,
