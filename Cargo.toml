@@ -6,4 +6,4 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.98"
 derive-where = "1.4.0"
-plonky2 = "1.1.0"
+plonky2 = { git = "https://github.com/0xPolygonZero/plonky2" }
