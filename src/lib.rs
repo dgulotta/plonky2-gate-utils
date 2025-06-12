@@ -33,6 +33,20 @@ pub trait SimpleGate<F: RichField + Extendable<1>>: 'static + Send + Sync + Size
     ) -> Vec<<F as Extendable<D>>::Extension>
     where
         F: Extendable<D>;
+    fn apply_ext<const D: usize>(
+        builder: &mut CircuitBuilder<F, D>,
+        targets: &[ExtensionTarget<D>],
+    ) -> Vec<ExtensionTarget<D>>
+    where
+        F: Extendable<D>,
+    {
+        let recursive_gate = RecursiveGateAdapter::<D, F, Self> {
+            max_ops: builder.config.num_routed_wires / (D * Self::WIRES_PER_OP),
+            _phantom: PhantomData,
+        };
+        assert!(recursive_gate.max_ops > 0);
+        recursive_gate.apply(builder, targets)
+    }
     fn apply<const D: usize>(builder: &mut CircuitBuilder<F, D>, targets: &[Target]) -> Vec<Target>
     where
         F: Extendable<D>,
@@ -293,9 +307,7 @@ where
         for i in 0..self.max_ops {
             let input_start = i * G::WIRES_PER_OP;
             let output_start = input_start + G::INPUTS_PER_OP;
-            let computed = self
-                .recursive_gate()
-                .apply(builder, &vars.local_wires[input_start..output_start]);
+            let computed = G::apply_ext(builder, &vars.local_wires[input_start..output_start]);
             for j in 0..G::OUTPUTS_PER_OP {
                 constraints
                     .push(builder.sub_extension(computed[j], vars.local_wires[output_start + j]));
