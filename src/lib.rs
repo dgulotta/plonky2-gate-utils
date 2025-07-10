@@ -1,11 +1,12 @@
 #![allow(clippy::needless_range_loop)]
+#![allow(clippy::type_complexity)]
 
 use std::{fmt::Debug, marker::PhantomData};
 
 use derive_where::derive_where;
 
 use plonky2::{
-    field::extension::{Extendable, FieldExtension},
+    field::extension::{Extendable, FieldExtension, OEF},
     gates::gate::Gate,
     hash::hash_types::RichField,
     iop::{
@@ -22,17 +23,15 @@ use plonky2::{
     util::serialization::{Buffer, IoResult, Read, Write},
 };
 
-pub trait SimpleGate<F: RichField + Extendable<1>>: 'static + Send + Sync + Sized {
+pub trait SimpleGate<F: RichField>: 'static + Send + Sync + Sized {
     const INPUTS_PER_OP: usize;
     const OUTPUTS_PER_OP: usize;
     const WIRES_PER_OP: usize = Self::INPUTS_PER_OP + Self::OUTPUTS_PER_OP;
     const DEGREE: usize;
     const ID: &'static str;
-    fn eval<const D: usize>(
-        wires: &[<F as Extendable<D>>::Extension],
-    ) -> Vec<<F as Extendable<D>>::Extension>
+    fn eval<E, const D: usize>(wires: &[E]) -> Vec<E>
     where
-        F: Extendable<D>;
+        E: OEF<D, BaseField = F>;
     fn apply_ext<const D: usize>(
         builder: &mut CircuitBuilder<F, D>,
         targets: &[ExtensionTarget<D>],
@@ -66,28 +65,36 @@ pub trait SimpleGate<F: RichField + Extendable<1>>: 'static + Send + Sync + Size
 }
 
 #[derive_where(Clone, Debug)]
-pub struct GateAdapter<F: RichField + Extendable<1>, G: SimpleGate<F>> {
+pub struct GateAdapter<F: RichField, G: SimpleGate<F>> {
     max_ops: usize,
     recursive_max_wires: usize,
     _phantom: PhantomData<(G, fn(F) -> F)>,
 }
 
 #[derive_where(Clone, Debug)]
-pub struct RecursiveGateAdapter<const D: usize, F: RichField + Extendable<1>, G: SimpleGate<F>> {
+pub struct RecursiveGateAdapter<const D: usize, F: RichField, G: SimpleGate<F>> {
     max_ops: usize,
     _phantom: PhantomData<(G, fn(F) -> F)>,
 }
 
 #[derive_where(Clone, Debug)]
-pub struct RecursiveGenerator<const D: usize, F: RichField + Extendable<1>, G: SimpleGate<F>> {
+pub struct RecursiveGenerator<const ED: usize, E, G>
+where
+    E: OEF<ED>,
+    E::BaseField: RichField,
+    G: SimpleGate<E::BaseField>,
+{
     row: usize,
     index: usize,
-    _phantom: PhantomData<(G, fn(F) -> F)>,
+    _phantom: PhantomData<(G, fn(E) -> E)>,
 }
 
 // Circuit data can only be serialized if the generators implement Default
-impl<const D: usize, F: RichField + Extendable<1>, G: SimpleGate<F>> Default
-    for RecursiveGenerator<D, F, G>
+impl<const ED: usize, E, G> Default for RecursiveGenerator<ED, E, G>
+where
+    E: OEF<ED>,
+    E::BaseField: RichField,
+    G: SimpleGate<E::BaseField>,
 {
     fn default() -> Self {
         Self {
@@ -98,7 +105,7 @@ impl<const D: usize, F: RichField + Extendable<1>, G: SimpleGate<F>> Default
     }
 }
 
-impl<F: RichField + Extendable<1>, G: SimpleGate<F>> GateAdapter<F, G> {
+impl<F: RichField, G: SimpleGate<F>> GateAdapter<F, G> {
     const WIRES_PER_OP: usize = G::INPUTS_PER_OP + G::OUTPUTS_PER_OP;
 
     pub fn new_from_config(config: &CircuitConfig) -> Self {
@@ -117,7 +124,7 @@ impl<F: RichField + Extendable<1>, G: SimpleGate<F>> GateAdapter<F, G> {
     }
 }
 
-impl<const D: usize, F: RichField + Extendable<1>, G: SimpleGate<F>> RecursiveGateAdapter<D, F, G> {
+impl<const D: usize, F: RichField, G: SimpleGate<F>> RecursiveGateAdapter<D, F, G> {
     const INPUTS_PER_OP: usize = D * G::INPUTS_PER_OP;
     const OUTPUTS_PER_OP: usize = D * G::OUTPUTS_PER_OP;
     const WIRES_PER_OP: usize = Self::INPUTS_PER_OP + Self::OUTPUTS_PER_OP;
@@ -158,9 +165,14 @@ impl<const D: usize, F: RichField + Extendable<1>, G: SimpleGate<F>> RecursiveGa
     }
 }
 
-impl<const D: usize, F: RichField + Extendable<1>, G: SimpleGate<F>> RecursiveGenerator<D, F, G> {
-    const WIRES_PER_OP: usize = RecursiveGateAdapter::<D, F, G>::WIRES_PER_OP;
-    const INPUTS_PER_OP: usize = RecursiveGateAdapter::<D, F, G>::INPUTS_PER_OP;
+impl<const ED: usize, E, G> RecursiveGenerator<ED, E, G>
+where
+    E: OEF<ED>,
+    E::BaseField: RichField,
+    G: SimpleGate<E::BaseField>,
+{
+    const WIRES_PER_OP: usize = ED * G::WIRES_PER_OP;
+    const INPUTS_PER_OP: usize = ED * G::INPUTS_PER_OP;
 }
 
 #[derive(Debug, Clone)]
@@ -197,7 +209,7 @@ impl<R: Read> ReadTargetList for R {}
 
 impl<F, G: SimpleGate<F>, const D: usize> Gate<F, D> for GateAdapter<F, G>
 where
-    F: RichField + Extendable<D> + Extendable<1>,
+    F: RichField + Extendable<D>,
 {
     fn id(&self) -> String {
         format!("GateAdapter<{}>", G::ID)
@@ -268,12 +280,12 @@ where
             let out_start = in_start + G::INPUTS_PER_OP;
             let inputs: Vec<_> = (0..G::INPUTS_PER_OP)
                 .map(|j| {
-                    <F as Extendable<1>>::Extension::from_basefield_array([
+                    <F as FieldExtension<1>>::from_basefield_array([
                         vars_base.local_wires[in_start + j]
                     ])
                 })
                 .collect();
-            let computed = G::eval::<1>(&inputs[..]);
+            let computed = G::eval::<F, 1>(&inputs[..]);
             yield_constr.many(
                 computed.iter().enumerate().map(|(j, &x)| {
                     x.to_basefield_array()[0] - vars_base.local_wires[out_start + j]
@@ -287,7 +299,7 @@ where
         for i in 0..self.max_ops {
             let in_start = Self::WIRES_PER_OP * i;
             let out_start = in_start + G::INPUTS_PER_OP;
-            let computed = G::eval::<D>(&vars.local_wires[in_start..out_start]);
+            let computed = G::eval::<F::Extension, D>(&vars.local_wires[in_start..out_start]);
             constraints.extend(
                 computed
                     .iter()
@@ -317,7 +329,12 @@ where
     }
 }
 
-impl<F: RichField + Extendable<1>, G: SimpleGate<F>, const D: usize> RecursiveGenerator<D, F, G> {
+impl<const ED: usize, E, G> RecursiveGenerator<ED, E, G>
+where
+    E: OEF<ED>,
+    E::BaseField: RichField,
+    G: SimpleGate<E::BaseField>,
+{
     fn deps(&self) -> Vec<Target> {
         let offset = self.index * Self::WIRES_PER_OP;
         (0..Self::INPUTS_PER_OP)
@@ -326,17 +343,26 @@ impl<F: RichField + Extendable<1>, G: SimpleGate<F>, const D: usize> RecursiveGe
     }
 }
 
-impl<F, G, const D: usize, const E: usize> SimpleGenerator<F, E> for RecursiveGenerator<D, F, G>
+impl<const ED: usize, E, G, const D: usize> SimpleGenerator<E::BaseField, D>
+    for RecursiveGenerator<ED, E, G>
 where
-    G: SimpleGate<F>,
-    F: RichField + Extendable<D> + Extendable<E> + Extendable<1>,
+    E: OEF<ED>,
+    E::BaseField: RichField + Extendable<D>,
+    G: SimpleGate<E::BaseField>,
 {
-    fn serialize(&self, dst: &mut Vec<u8>, _common_data: &CommonCircuitData<F, E>) -> IoResult<()> {
+    fn serialize(
+        &self,
+        dst: &mut Vec<u8>,
+        _common_data: &CommonCircuitData<E::BaseField, D>,
+    ) -> IoResult<()> {
         dst.write_usize(self.row)?;
         dst.write_usize(self.index)
     }
 
-    fn deserialize(src: &mut Buffer, _common_data: &CommonCircuitData<F, E>) -> IoResult<Self>
+    fn deserialize(
+        src: &mut Buffer,
+        _common_data: &CommonCircuitData<E::BaseField, D>,
+    ) -> IoResult<Self>
     where
         Self: Sized,
     {
@@ -348,7 +374,7 @@ where
     }
 
     fn id(&self) -> String {
-        format!("RecursiveGenerator<{},{}>", D, G::ID)
+        format!("RecursiveGenerator<{},{}>", ED, G::ID)
     }
 
     fn dependencies(&self) -> Vec<Target> {
@@ -357,22 +383,22 @@ where
 
     fn run_once(
         &self,
-        witness: &plonky2::iop::witness::PartitionWitness<F>,
-        out_buffer: &mut plonky2::iop::generator::GeneratedValues<F>,
+        witness: &plonky2::iop::witness::PartitionWitness<E::BaseField>,
+        out_buffer: &mut plonky2::iop::generator::GeneratedValues<E::BaseField>,
     ) -> anyhow::Result<()> {
         let deps = self.deps();
-        let inputs: Vec<<F as Extendable<D>>::Extension> = (0..G::INPUTS_PER_OP)
+        let inputs: Vec<E> = (0..G::INPUTS_PER_OP)
             .map(|i| {
-                <F as Extendable<D>>::Extension::from_basefield_array(core::array::from_fn(|j| {
-                    witness.get_target(deps[i * D + j])
+                E::from_basefield_array(core::array::from_fn(|j| {
+                    witness.get_target(deps[i * ED + j])
                 }))
             })
             .collect();
-        let out: Vec<<F as Extendable<D>>::Extension> = G::eval::<D>(&inputs[..]);
+        let out: Vec<E> = G::eval::<E, ED>(&inputs[..]);
         for (i, x) in out.into_iter().enumerate() {
             for (j, y) in x.to_basefield_array().into_iter().enumerate() {
                 let offset = self.index * Self::WIRES_PER_OP;
-                let target = Target::wire(self.row, offset + Self::INPUTS_PER_OP + D * i + j);
+                let target = Target::wire(self.row, offset + Self::INPUTS_PER_OP + ED * i + j);
                 out_buffer.set_target(target, y)?;
             }
         }
@@ -383,7 +409,7 @@ where
 impl<G, const D: usize, F> Gate<F, D> for RecursiveGateAdapter<D, F, G>
 where
     G: SimpleGate<F>,
-    F: RichField + Extendable<D> + Extendable<1>,
+    F: RichField + Extendable<D>,
 {
     fn id(&self) -> String {
         format!("RecursiveGateAdapter<{},{}>", D, G::ID)
@@ -428,7 +454,7 @@ where
         (0..self.max_ops)
             .map(|index| {
                 WitnessGeneratorRef::new(
-                    RecursiveGenerator::<D, F, G> {
+                    RecursiveGenerator::<D, F::Extension, G> {
                         row,
                         index,
                         _phantom: PhantomData,
@@ -449,12 +475,12 @@ where
             let output_start = input_start + D * G::INPUTS_PER_OP;
             let input: Vec<_> = (0..G::INPUTS_PER_OP)
                 .map(|j| {
-                    <F as Extendable<D>>::Extension::from_basefield_array(core::array::from_fn(
-                        |k| vars_base.local_wires[input_start + D * j + k],
-                    ))
+                    F::Extension::from_basefield_array(core::array::from_fn(|k| {
+                        vars_base.local_wires[input_start + D * j + k]
+                    }))
                 })
                 .collect();
-            let output = G::eval::<D>(&input);
+            let output = G::eval::<F::Extension, D>(&input);
             for j in 0..G::OUTPUTS_PER_OP {
                 yield_constr.many((0..D).map(|k| {
                     output[j].to_basefield_array()[k]
@@ -464,7 +490,7 @@ where
         }
     }
 
-    fn eval_unfiltered(&self, vars: EvaluationVars<F, D>) -> Vec<<F as Extendable<D>>::Extension> {
+    fn eval_unfiltered(&self, vars: EvaluationVars<F, D>) -> Vec<F::Extension> {
         // We think of vars as a list of G::WIRES_PER_OP elements of ExtensionAlgebra<F,D>.
         // We use the fact that ExtensionAlgebra<F,D> is isomorphic to D copies of
         // F::Extension, with the isomorphism given by (a \otimes b) ->
@@ -502,8 +528,8 @@ where
                     }
                     inputs.push(<F as Extendable<D>>::Extension::from_basefield_array(input));
                 }
-                *ev = G::eval::<D>(&inputs);
-                phase *= <F as Extendable<D>>::DTH_ROOT;
+                *ev = G::eval::<F::Extension, D>(&inputs);
+                phase *= F::DTH_ROOT;
             }
             for j in 0..G::OUTPUTS_PER_OP {
                 let mut phase = F::ONE;
@@ -608,7 +634,7 @@ where
 #[cfg(test)]
 mod test {
     use plonky2::{
-        field::{extension::Extendable, goldilocks_field::GoldilocksField, types::Sample},
+        field::{extension::OEF, goldilocks_field::GoldilocksField, types::Sample},
         hash::hash_types::RichField,
         iop::witness::PartialWitness,
         plonk::{
@@ -622,17 +648,12 @@ mod test {
     #[derive(Clone)]
     struct MulGate;
 
-    impl<F: RichField + Extendable<1>> SimpleGate<F> for MulGate {
+    impl<F: RichField> SimpleGate<F> for MulGate {
         const INPUTS_PER_OP: usize = 2;
         const OUTPUTS_PER_OP: usize = 1;
         const DEGREE: usize = 2;
         const ID: &'static str = "MulGate";
-        fn eval<const D: usize>(
-            wires: &[<F as Extendable<D>>::Extension],
-        ) -> Vec<<F as Extendable<D>>::Extension>
-        where
-            F: Extendable<D>,
-        {
+        fn eval<E: OEF<D, BaseField = F>, const D: usize>(wires: &[E]) -> Vec<E> {
             vec![wires[0] * wires[1]]
         }
     }
